@@ -1,0 +1,75 @@
+---
+- name: Check {{ boot.mountpoint }} mountpoint exist
+  become: yes
+  file:
+    path: '{{ boot.mountpoint }}'
+    state: directory
+    owner: root
+    group: root
+
+- name: Check {{ boot.nfs }} nfs is mounted
+  become: yes
+  shell: 'sudo mount -l | grep {{ boot.nfs }} | wc -l'
+  register: boot_nfs_is_mounted
+
+- name: Mount {{ boot.nfs }} network share
+  become: yes
+  command: 'sudo mount -t {{ type }} -O {{ opts }} {{ boot.nfs }} {{ boot.mountpoint }}'
+  when: boot_nfs_is_mounted.stdout == "0"
+
+- name: Get RPi serial number
+  become: yes
+  shell: 'vcgencmd otp_dump | grep 28: | sed s/.*://g'
+  register: serial_number
+
+- name: Copy /boot on {{ boot.mountpoint }}/{{ serial_number.stdout }}
+  become: yes
+  copy:
+    remote_src: yes
+    src: /boot/
+    dest: '{{ boot.mountpoint }}/{{ serial_number.stdout }}'
+    owner: root
+    group: root
+
+- name: Check {{ root.mountpoint }} mountpoint exist
+  become: yes
+  file:
+    path: '{{ root.mountpoint }}'
+    state: directory
+    owner: root
+    group: root
+
+- name: Check {{ root.nfs }} nfs is mounted
+  become: yes
+  shell: 'sudo mount -l | grep {{ root.nfs }} | wc -l'
+  register: root_nfs_is_mounted
+
+- name: Mount {{ root.nfs }} network share
+  become: yes
+  command: 'sudo mount -t {{ type }} -O {{ opts }} {{ root.nfs }} {{ root.mountpoint }}'
+  when: root_nfs_is_mounted.stdout == "0"
+
+- name: Synchronize / on {{ root.mountpoint }}/{{ inventory_hostname }}
+  become: yes
+  command: 'sudo rsync -xa --progress --exclude {{ root.exclude }} {{ root.src }} {{ root.mountpoint }}/{{ inventory_hostname }}'
+
+- name: Edit kernel options in cmdline.txt on {{ boot.mountpoint }}/{{ serial_number.stdout }}
+  become: yes
+  replace:
+    path: '{{ boot.mountpoint }}/{{ serial_number.stdout }}/cmdline.txt'
+    regexp: 'root=.+ rootfstype=ext4 fsck.repair=yes'
+    replace: 'root=/dev/nfs nfsroot={{ root.nfs }}/{{ inventory_hostname }},vers=4.2 rw ip=dhcp rootfstype={{ type }} elevator=deadline'
+
+- name: Edit /boot partition in fstab on {{ root.mountpoint }}/{{ inventory_hostname }}/etc/fstab
+  become: yes
+  replace:
+    path: '{{ root.mountpoint }}/{{ inventory_hostname }}/etc/fstab'
+    regexp: 'PARTUUID=.+\s*/boot\s*vfat\s*defaults,flush\s*0\s*2'
+    replace: '{{ boot.nfs }}/{{ serial_number.stdout }}    /boot   {{ type }}     defaults,proto=tcp      0       2'
+
+- name: Edit / partition in fstab on {{ root.mountpoint }}/{{ inventory_hostname }}/etc/fstab
+  become: yes
+  replace:
+    path: '{{ root.mountpoint }}/{{ inventory_hostname }}/etc/fstab'
+    regexp: 'PARTUUID=.+\s*/\s*ext4\s*defaults,noatime\s*0\s*1'
+    replace: '{{ root.nfs }}/{{ inventory_hostname }} /       {{ type }}     defaults,proto=tcp,noatime      0       1'
